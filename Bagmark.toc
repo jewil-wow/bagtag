@@ -1,0 +1,9 @@
+## Interface: 16001
+## Title: Bagmark
+## Notes: Alt-click bag items to mark them Junk, Auction, Mail or Bank.
+## Author: jewil
+## Version: 1.0.0
+## OptionalDeps: EllesmereUIBags, Baganator
+## SavedVariablesPerCharacter: BagmarkDB
+
+Bagmark.lua
