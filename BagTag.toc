@@ -1,10 +1,10 @@
 ## Interface: 16001
-## Title: Bagmark
+## Title: BagTag
 ## Notes: Alt-click bag items to mark them Vendor, Auction, Mail or Bank.
 ## Author: jewil
 ## Version: 1.0.0
 ## OptionalDeps: EllesmereUIBags, Baganator
-## SavedVariablesPerCharacter: BagmarkDB
+## SavedVariablesPerCharacter: BagTagDB
 
-Bagmark.lua
+BagTag.lua
 BaganatorSort.lua

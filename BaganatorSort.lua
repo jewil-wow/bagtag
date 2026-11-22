@@ -1,4 +1,4 @@
--- BaganatorSort.lua: adds a "Bagmark" sort method to Baganator's sort dropdown.
+-- BaganatorSort.lua: adds a "BagTag" sort method to Baganator's sort dropdown.
 -- It sorts the bags like Baganator's Type sort, but puts marked items at the end,
 -- grouped by mark (Vendor, Auction, Mail, Bank). The bank is handed to the game's
 -- own bank sort, since marks only apply to the bags.
@@ -14,7 +14,7 @@ local PickupContainerItem = C_Container.PickupContainerItem
 local GetItemInfo = C_Item.GetItemInfo
 local GetItemInfoInstant = C_Item.GetItemInfoInstant
 
-local SORT_ID, SORT_LABEL = "bagmark", "Bagmark"
+local SORT_ID, SORT_LABEL = "bagtag", "BagTag"
 local STEP_DELAY = 0.15  -- seconds between rounds of moves
 local MOVES_PER_STEP = 8
 local MAX_STEPS = 400    -- hard stop (about a minute)
@@ -97,18 +97,28 @@ local function ReagentBag()
     return Enum.BagIndex and Enum.BagIndex.ReagentBag
 end
 
--- The general-purpose bags only: special bags (soul, quiver, profession) and the
--- reagent bag are left alone, as they only take certain items.
-local function SortableSlots()
-    local slots = {}
-    for bag = BACKPACK_CONTAINER, NUM_BAG_SLOTS do
+-- The bags, split into groups that are each sorted on their own: the general-purpose
+-- bags together, the reagent bag, and special bags (soul, quiver, profession) grouped
+-- by type. Items only move within their group, so nothing is put in a bag that can't
+-- hold it.
+local function SlotGroups()
+    local groups, byKey = {}, {}
+    local last = NUM_TOTAL_EQUIPPED_BAG_SLOTS or NUM_BAG_SLOTS
+    for bag = BACKPACK_CONTAINER, last do
         local n = GetContainerNumSlots(bag)
-        local _, family = C_Container.GetContainerNumFreeSlots(bag)
-        if n > 0 and (family == nil or family == 0) and bag ~= ReagentBag() then
-            for slot = 1, n do slots[#slots + 1] = { bag = bag, slot = slot } end
+        if n > 0 then
+            local _, family = C_Container.GetContainerNumFreeSlots(bag)
+            local key = (bag == ReagentBag() and "reagent") or ((family or 0) == 0 and "general") or family
+            local group = byKey[key]
+            if not group then
+                group = {}
+                byKey[key] = group
+                groups[#groups + 1] = group
+            end
+            for slot = 1, n do group[#group + 1] = { bag = bag, slot = slot } end
         end
     end
-    return slots
+    return groups
 end
 
 -- Fills each slot entry with what's in it now. Returns whether every item's info is loaded.
@@ -229,8 +239,11 @@ local function Step()
     if steps > MAX_STEPS then return Stop("Sort stopped: it was taking too long. Try sorting again.") end
     if GetCursorInfo() then return Stop("Sort stopped: you're holding an item.") end
 
-    local slots = SortableSlots()
-    local allCached = ReadSlots(slots)
+    local groups = SlotGroups()
+    local allCached = true
+    for _, slots in ipairs(groups) do
+        if not ReadSlots(slots) then allCached = false end
+    end
     -- Give the game a moment to load item names and levels so the order is right.
     if not allCached and loadTries < LOAD_RETRIES then
         loadTries = loadTries + 1
@@ -238,19 +251,26 @@ local function Step()
         return
     end
 
-    local combine = CombineStacks(slots)
-    if combine then
+    local combining = false
+    for _, slots in ipairs(groups) do
+        if CombineStacks(slots) then combining = true end
+    end
+    if combining then
         C_Timer.After(STEP_DELAY, Step)
         return
     end
 
-    local moves, done = SortRound(slots, reverse)
-    if done then return Stop() end
-    if moves == 0 then
-        local anyLocked = false
+    local moves, allDone, anyLocked = 0, true, false
+    for _, slots in ipairs(groups) do
+        local groupMoves, done = SortRound(slots, reverse)
+        moves = moves + groupMoves
+        if not done then allDone = false end
         for _, s in ipairs(slots) do
             if s.locked then anyLocked = true; break end
         end
+    end
+    if allDone then return Stop() end
+    if moves == 0 then
         if not anyLocked then
             stalls = stalls + 1
             if stalls >= MAX_STALLS then return Stop("Sort stopped: couldn't finish moving items.") end

@@ -1,4 +1,4 @@
--- Bagmark: Alt-click a bag item to cycle its mark: Vendor -> Auction -> Mail -> Bank -> none.
+-- BagTag: Alt-click a bag item to cycle its mark: Vendor -> Auction -> Mail -> Bank -> none.
 -- Marks are per item ID and last only while the item is in your bags.
 -- Vendor: offers to sell Vendor. Bank: offers to deposit Bank. Mailbox / Auction House: glows Mail / Auction.
 
@@ -25,7 +25,7 @@ local MARKS = {
 }
 local NUM_MARKS = #MARKS
 
-local PREFIX = "|cff33ccffBagmark|r: "
+local PREFIX = "|cff33ccffBagTag|r: "
 -- Formats copper as gold/silver/copper with coin icons. Each number is glued to its icon
 -- (no space between them) so wrapping can't split them apart.
 local COINS = {
@@ -47,8 +47,8 @@ end
 
 local function Print(msg) DEFAULT_CHAT_FRAME:AddMessage(PREFIX .. msg) end
 
-local marks           -- BagmarkDB.marks: [itemID] = mark, forgotten when the item leaves the bags
-local permanent       -- BagmarkDB.permanent: [itemID] = mark, kept until changed or removed
+local marks           -- BagTagDB.marks: [itemID] = mark, forgotten when the item leaves the bags
+local permanent       -- BagTagDB.permanent: [itemID] = mark, kept until changed or removed
 local seen = {}       -- item IDs seen in the bags this session (only those can be pruned)
 local glowMark        -- the mark that glows right now (MAIL at the mailbox, AUCTION at the AH)
 local widgets = {}    -- [button] = widget, for the game's and EllesmereUI's buttons
@@ -67,7 +67,7 @@ local NONE = 0
 local POOR = 0
 
 local function AutoVendor(id)
-    if not (BagmarkDB and BagmarkDB.autoGrey ~= false) then return false end
+    if not (BagTagDB and BagTagDB.autoGrey ~= false) then return false end
     local _, _, quality, _, _, _, _, _, _, _, price = GetItemInfo(id)
     return quality == POOR and price ~= nil and price > 0
 end
@@ -382,7 +382,7 @@ local ROW_H, ROW_GAP, MAX_ROWS = 18, 6, 20
 
 local function GetPanel()
     if panel then return panel end
-    panel = CreateFrame("Frame", "BagmarkConfirm", UIParent, "BackdropTemplate")
+    panel = CreateFrame("Frame", "BagTagConfirm", UIParent, "BackdropTemplate")
     panel:SetSize(PANEL_WIDTH, 78)
     panel:SetFrameStrata("HIGH")
     panel:SetBackdrop({
@@ -748,7 +748,7 @@ local function OnTooltip(tooltip, data)
     elseif not (marks and marks[id]) then
         note = " (grey item)"
     end
-    tooltip:AddLine("Bagmark: " .. m.name .. note, m.r, m.g, m.b)
+    tooltip:AddLine("BagTag: " .. m.name .. note, m.r, m.g, m.b)
 end
 
 -------------------------------------------------------------------------------
@@ -767,17 +767,17 @@ end
 local events = CreateFrame("Frame")
 
 -- Runs one optional setup step. A failure is still reported (BugSack sees it) but can't
--- stop the rest of Bagmark from starting.
+-- stop the rest of BagTag from starting.
 local function Safely(fn)
     local ok, err = pcall(fn)
     if not ok then geterrorhandler()(err) end
 end
 
 local function Init()
-    BagmarkDB = BagmarkDB or {}
-    BagmarkDB.marks = BagmarkDB.marks or {}
-    BagmarkDB.permanent = BagmarkDB.permanent or {}
-    marks, permanent = BagmarkDB.marks, BagmarkDB.permanent
+    BagTagDB = BagTagDB or {}
+    BagTagDB.marks = BagTagDB.marks or {}
+    BagTagDB.permanent = BagTagDB.permanent or {}
+    marks, permanent = BagTagDB.marks, BagTagDB.permanent
 
     -- Core events first, so the vendor/bank/mail/AH features work whatever happens below.
     for _, event in ipairs({
@@ -804,7 +804,7 @@ local function Init()
         local api = _G.Baganator and _G.Baganator.API
         if C_AddOns.IsAddOnLoaded("Baganator") and api and api.RegisterCornerWidget then
             baganator = api
-            api.RegisterCornerWidget("Bagmark", ADDON, BaganatorPaint, BaganatorInit,
+            api.RegisterCornerWidget("BagTag", ADDON, BaganatorPaint, BaganatorInit,
                 { corner = "top_left", priority = 1 }, true)
         end
     end)
@@ -892,14 +892,14 @@ events:RegisterEvent("ADDON_LOADED")
 -------------------------------------------------------------------------------
 
 -------------------------------------------------------------------------------
--- Permanent marks window (/bagmark list)
+-- Permanent marks window (/bagtag list)
 -------------------------------------------------------------------------------
 
 local LIST_W, LIST_H, LIST_ROW_H, LIST_PAD = 320, 360, 22, 10
 local listFrame
 
 local function BuildList()
-    local f = CreateFrame("Frame", "BagmarkListFrame", UIParent, "BackdropTemplate")
+    local f = CreateFrame("Frame", "BagTagListFrame", UIParent, "BackdropTemplate")
     f:SetSize(LIST_W, LIST_H)
     f:SetPoint("CENTER")
     f:SetFrameStrata("DIALOG")
@@ -913,11 +913,11 @@ local function BuildList()
     f:SetScript("OnDragStop", f.StopMovingOrSizing)
     f:SetClampedToScreen(true)
     f:Hide()
-    table.insert(UISpecialFrames, "BagmarkListFrame") -- Escape closes it
+    table.insert(UISpecialFrames, "BagTagListFrame") -- Escape closes it
 
     local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     title:SetPoint("TOPLEFT", LIST_PAD, -LIST_PAD)
-    title:SetText("Bagmark: Permanent Marks")
+    title:SetText("BagTag: Permanent Marks")
 
     local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", 2, 2)
@@ -1041,19 +1041,19 @@ end
 -- Slash command
 -------------------------------------------------------------------------------
 
-SLASH_BAGMARK1 = "/bagmark"
-SlashCmdList.BAGMARK = function(msg)
+SLASH_BAGTAG1 = "/bagtag"
+SlashCmdList.BAGTAG = function(msg)
     msg = (msg or ""):lower():match("^%s*(.-)%s*$")
     if msg == "list" then
         ToggleList()
     elseif msg == "clear" then
         wipe(marks)
         Repaint()
-        Print("Normal marks cleared. Permanent marks were kept (/bagmark clear all removes those too).")
+        Print("Normal marks cleared. Permanent marks were kept (/bagtag clear all removes those too).")
     elseif msg == "grey" or msg == "gray" then
-        BagmarkDB.autoGrey = BagmarkDB.autoGrey == false
+        BagTagDB.autoGrey = BagTagDB.autoGrey == false
         Repaint()
-        Print("Grey items are " .. (BagmarkDB.autoGrey and "now" or "no longer") .. " marked Vendor automatically.")
+        Print("Grey items are " .. (BagTagDB.autoGrey and "now" or "no longer") .. " marked Vendor automatically.")
     elseif msg == "clear all" then
         wipe(marks)
         wipe(permanent)
@@ -1063,7 +1063,7 @@ SlashCmdList.BAGMARK = function(msg)
     else
         Print("Alt-click a bag item to cycle Vendor > Auction > Mail > Bank > none.")
         Print("Alt+Shift-click does the same but makes the mark permanent.")
-        Print("/bagmark list - permanent marks;  /bagmark clear - normal marks;  /bagmark clear all - every mark.")
-        Print("/bagmark grey - turn automatic Vendor marks on grey items on or off.")
+        Print("/bagtag list - permanent marks;  /bagtag clear - normal marks;  /bagtag clear all - every mark.")
+        Print("/bagtag grey - turn automatic Vendor marks on grey items on or off.")
     end
 end
