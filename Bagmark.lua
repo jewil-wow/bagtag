@@ -2,7 +2,7 @@
 -- Marks are per item ID and last only while the item is in your bags.
 -- Vendor: offers to sell Vendor. Bank: offers to deposit Bank. Mailbox / Auction House: glows Mail / Auction.
 
-local ADDON = ...
+local ADDON, ns = ...
 
 local GetContainerItemID = C_Container.GetContainerItemID
 local GetContainerItemInfo = C_Container.GetContainerItemInfo
@@ -55,6 +55,11 @@ local owners = {}     -- [widget] = button, for Baganator's corner widgets
 local bagOf, slotOf, hooked = {}, {}, {}
 local frames = {}     -- the game's container frames, once hooked
 local baganator, ellesmere
+
+-- Shared with the addon's other files (BaganatorSort.lua).
+ns.Print = Print
+ns.NUM_MARKS = NUM_MARKS
+function ns.GetMark(id) return marks and marks[id] end
 
 -------------------------------------------------------------------------------
 -- Marks
@@ -647,11 +652,34 @@ local function DepositBank()
     DepositStep()
 end
 
-local function OfferBank()
-    if not atBank then return end
+-- The bank window on screen: EllesmereUI's, Baganator's or the game's own.
+-- Baganator names its bank windows "Baganator_<Single|Category>ViewBankViewFrame<skin>"
+-- and adds them to UISpecialFrames (so Escape closes them), which is where we look.
+local function BankWindow()
+    local eui = Shown(_G.EUI_BankFrame)
+    if eui then return eui end
+    for _, name in ipairs(UISpecialFrames or {}) do
+        if type(name) == "string" and name:find("^Baganator_") and name:find("BankViewFrame") then
+            local frame = Shown(_G[name])
+            if frame then return frame end
+        end
+    end
+    return Shown(BankFrame)
+end
+
+-- Waits (briefly) for the bank window to be on screen, then offers once per visit.
+local bankOffered = false
+local function OfferBank(tries)
+    if not atBank or bankOffered then return end
+    tries = tries or 0
+    local owner = BankWindow()
+    if not owner and tries < 8 then
+        C_Timer.After(OPEN_DELAY, function() OfferBank(tries + 1) end)
+        return
+    end
+    bankOffered = true
     local count = CountBankMarked()
     if count == 0 then return end
-    local owner = Shown(_G.EUI_BankFrame) or Shown(BankFrame)
     local m = MARKS[BANK]
     ShowPanel(owner, ("Deposit %d stack%s marked |cff%02x%02x%02x%s|r?"):format(count, count == 1 and "" or "s",
         m.r * 255, m.g * 255, m.b * 255, m.name), "Deposit", DepositBank, MarkedItems(BANK))
@@ -685,43 +713,19 @@ end
 
 local events = CreateFrame("Frame")
 
+-- Runs one optional setup step. A failure is still reported (BugSack sees it) but can't
+-- stop the rest of Bagmark from starting.
+local function Safely(fn)
+    local ok, err = pcall(fn)
+    if not ok then geterrorhandler()(err) end
+end
+
 local function Init()
     BagmarkDB = BagmarkDB or {}
     BagmarkDB.marks = BagmarkDB.marks or {}
     marks = BagmarkDB.marks
 
-    HookGameBags()
-
-    local eui = _G.EUI_Bags
-    if C_AddOns.IsAddOnLoaded("EllesmereUIBags") and eui and eui.RegisterItemOverlayIcon then
-        ellesmere = eui
-        eui.RegisterItemOverlayIcon(ADDON, EllesmereSlot)
-    end
-
-    local api = _G.Baganator and _G.Baganator.API
-    if C_AddOns.IsAddOnLoaded("Baganator") and api and api.RegisterCornerWidget then
-        baganator = api
-        api.RegisterCornerWidget("Bagmark", ADDON, BaganatorPaint, BaganatorInit,
-            { corner = "top_left", priority = 1 }, true)
-    end
-
-    -- Backups for the window events, in case one of them doesn't fire.
-    if MailFrame then
-        MailFrame:HookScript("OnHide", function() if glowMark == MAIL then SetGlow(nil) end end)
-    end
-    if MerchantFrame then
-        MerchantFrame:HookScript("OnShow", function()
-            if not atMerchant then
-                atMerchant, offered = true, false
-                C_Timer.After(OPEN_DELAY, OfferVendor)
-            end
-        end)
-    end
-
-    if TooltipDataProcessor and TooltipDataProcessor.AddTooltipPostCall then
-        TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, OnTooltip)
-    end
-
+    -- Core events first, so the vendor/bank/mail/AH features work whatever happens below.
     for _, event in ipairs({
         "BAG_UPDATE_DELAYED", "PLAYER_ENTERING_WORLD", "PLAYER_REGEN_DISABLED",
         "MERCHANT_SHOW", "MERCHANT_CLOSED",
@@ -731,6 +735,46 @@ local function Init()
     }) do
         events:RegisterEvent(event)
     end
+
+    Safely(HookGameBags)
+
+    Safely(function()
+        local eui = _G.EUI_Bags
+        if C_AddOns.IsAddOnLoaded("EllesmereUIBags") and eui and eui.RegisterItemOverlayIcon then
+            ellesmere = eui
+            eui.RegisterItemOverlayIcon(ADDON, EllesmereSlot)
+        end
+    end)
+
+    Safely(function()
+        local api = _G.Baganator and _G.Baganator.API
+        if C_AddOns.IsAddOnLoaded("Baganator") and api and api.RegisterCornerWidget then
+            baganator = api
+            api.RegisterCornerWidget("Bagmark", ADDON, BaganatorPaint, BaganatorInit,
+                { corner = "top_left", priority = 1 }, true)
+        end
+    end)
+
+    -- Backups for the window events, in case one of them doesn't fire.
+    Safely(function()
+        if MailFrame then
+            MailFrame:HookScript("OnHide", function() if glowMark == MAIL then SetGlow(nil) end end)
+        end
+        if MerchantFrame then
+            MerchantFrame:HookScript("OnShow", function()
+                if not atMerchant then
+                    atMerchant, offered = true, false
+                    C_Timer.After(OPEN_DELAY, OfferVendor)
+                end
+            end)
+        end
+    end)
+
+    Safely(function()
+        if TooltipDataProcessor and TooltipDataProcessor.AddTooltipPostCall then
+            TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, OnTooltip)
+        end
+    end)
 end
 
 local fullPruneDone, ahHooked = false, false
@@ -761,10 +805,10 @@ events:SetScript("OnEvent", function(_, event, arg1)
         HidePanel()
         FinishSelling()
     elseif event == "BANKFRAME_OPENED" then
-        atBank = true
+        atBank, bankOffered = true, false
         C_Timer.After(OPEN_DELAY, OfferBank)
     elseif event == "BANKFRAME_CLOSED" then
-        atBank = false
+        atBank, bankOffered = false, false
         HidePanel()
         FinishDeposit()
     elseif event == "PLAYER_REGEN_DISABLED" then
