@@ -61,9 +61,25 @@ local baganator, ellesmere
 ns.Print = Print
 ns.NUM_MARKS = NUM_MARKS
 -- An item's mark: a permanent mark wins over a normal one.
+-- Grey (Poor quality) items that sell for something count as Vendor automatically.
+-- A stored mark of NONE (0) means "explicitly unmarked", so a grey can opt out.
+local NONE = 0
+local POOR = 0
+
+local function AutoVendor(id)
+    if not (BagmarkDB and BagmarkDB.autoGrey ~= false) then return false end
+    local _, _, quality, _, _, _, _, _, _, _, price = GetItemInfo(id)
+    return quality == POOR and price ~= nil and price > 0
+end
+
+-- An item's mark: a permanent mark wins over a normal one, which wins over the grey rule.
 local function MarkOf(id)
     if not id then return nil end
-    return (permanent and permanent[id]) or (marks and marks[id])
+    local stored = (permanent and permanent[id]) or (marks and marks[id])
+    if stored == NONE then return nil end
+    if stored then return stored end
+    if AutoVendor(id) then return VENDOR end
+    return nil
 end
 ns.GetMark = MarkOf
 
@@ -88,6 +104,7 @@ local Repaint -- defined below
 local RefreshList -- the permanent marks window, defined below
 
 local function ColorName(mark)
+    if mark == NONE then return "|cff888888No mark|r" end
     local m = MARKS[mark]
     return ("|cff%02x%02x%02x%s|r"):format(m.r * 255, m.g * 255, m.b * 255, m.name)
 end
@@ -97,7 +114,10 @@ end
 local function Cycle(id, bag, slot, makePermanent)
     local wasPermanent = permanent[id] ~= nil
     local nextMark = (MarkOf(id) or 0) + 1
-    if nextMark > NUM_MARKS then nextMark = nil end
+    if nextMark > NUM_MARKS then
+        -- Past Bank comes "no mark". Greys need it stored, or they'd fall back to Vendor.
+        nextMark = AutoVendor(id) and NONE or nil
+    end
     if makePermanent then
         permanent[id], marks[id] = nextMark, nil
     else
@@ -105,11 +125,17 @@ local function Cycle(id, bag, slot, makePermanent)
     end
     seen[id] = true
     local link = GetContainerItemLink(bag, slot) or ("item " .. id)
-    if nextMark then
+    if nextMark and nextMark ~= NONE then
         local note = makePermanent and " (permanent)" or (wasPermanent and " (no longer permanent)" or "")
         Print(("%s marked %s%s."):format(link, ColorName(nextMark), note))
     else
-        Print(link .. " unmarked." .. ((makePermanent or wasPermanent) and " Its permanent mark was removed." or ""))
+        local note = ""
+        if nextMark == NONE and makePermanent then
+            note = " It will stay unmarked even though it's grey."
+        elseif makePermanent or wasPermanent then
+            note = " Its permanent mark was removed."
+        end
+        Print(link .. " unmarked." .. note)
     end
     Repaint()
     RefreshList()
@@ -716,8 +742,13 @@ local function OnTooltip(tooltip, data)
     local mark = MarkOf(id)
     if not mark then return end
     local m = MARKS[mark]
-    local perm = permanent and permanent[id] and " (permanent)" or ""
-    tooltip:AddLine("Bagmark: " .. m.name .. perm, m.r, m.g, m.b)
+    local note = ""
+    if permanent and permanent[id] then
+        note = " (permanent)"
+    elseif not (marks and marks[id]) then
+        note = " (grey item)"
+    end
+    tooltip:AddLine("Bagmark: " .. m.name .. note, m.r, m.g, m.b)
 end
 
 -------------------------------------------------------------------------------
@@ -1019,6 +1050,10 @@ SlashCmdList.BAGMARK = function(msg)
         wipe(marks)
         Repaint()
         Print("Normal marks cleared. Permanent marks were kept (/bagmark clear all removes those too).")
+    elseif msg == "grey" or msg == "gray" then
+        BagmarkDB.autoGrey = BagmarkDB.autoGrey == false
+        Repaint()
+        Print("Grey items are " .. (BagmarkDB.autoGrey and "now" or "no longer") .. " marked Vendor automatically.")
     elseif msg == "clear all" then
         wipe(marks)
         wipe(permanent)
@@ -1029,5 +1064,6 @@ SlashCmdList.BAGMARK = function(msg)
         Print("Alt-click a bag item to cycle Vendor > Auction > Mail > Bank > none.")
         Print("Alt+Shift-click does the same but makes the mark permanent.")
         Print("/bagmark list - permanent marks;  /bagmark clear - normal marks;  /bagmark clear all - every mark.")
+        Print("/bagmark grey - turn automatic Vendor marks on grey items on or off.")
     end
 end
