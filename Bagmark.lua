@@ -47,7 +47,8 @@ end
 
 local function Print(msg) DEFAULT_CHAT_FRAME:AddMessage(PREFIX .. msg) end
 
-local marks           -- BagmarkDB.marks: [itemID] = mark
+local marks           -- BagmarkDB.marks: [itemID] = mark, forgotten when the item leaves the bags
+local permanent       -- BagmarkDB.permanent: [itemID] = mark, kept until changed or removed
 local seen = {}       -- item IDs seen in the bags this session (only those can be pruned)
 local glowMark        -- the mark that glows right now (MAIL at the mailbox, AUCTION at the AH)
 local widgets = {}    -- [button] = widget, for the game's and EllesmereUI's buttons
@@ -59,7 +60,12 @@ local baganator, ellesmere
 -- Shared with the addon's other files (BaganatorSort.lua).
 ns.Print = Print
 ns.NUM_MARKS = NUM_MARKS
-function ns.GetMark(id) return marks and marks[id] end
+-- An item's mark: a permanent mark wins over a normal one.
+local function MarkOf(id)
+    if not id then return nil end
+    return (permanent and permanent[id]) or (marks and marks[id])
+end
+ns.GetMark = MarkOf
 
 -------------------------------------------------------------------------------
 -- Marks
@@ -79,19 +85,34 @@ end
 
 local Repaint -- defined below
 
-local function Cycle(id, bag, slot)
-    local nextMark = (marks[id] or 0) + 1
+local RefreshList -- the permanent marks window, defined below
+
+local function ColorName(mark)
+    local m = MARKS[mark]
+    return ("|cff%02x%02x%02x%s|r"):format(m.r * 255, m.g * 255, m.b * 255, m.name)
+end
+
+-- Alt-click: the next mark, as a normal mark (and any permanent mark is dropped).
+-- Alt+Shift-click: the next mark, saved as permanent.
+local function Cycle(id, bag, slot, makePermanent)
+    local wasPermanent = permanent[id] ~= nil
+    local nextMark = (MarkOf(id) or 0) + 1
     if nextMark > NUM_MARKS then nextMark = nil end
-    marks[id] = nextMark
+    if makePermanent then
+        permanent[id], marks[id] = nextMark, nil
+    else
+        permanent[id], marks[id] = nil, nextMark
+    end
     seen[id] = true
     local link = GetContainerItemLink(bag, slot) or ("item " .. id)
     if nextMark then
-        local m = MARKS[nextMark]
-        Print(("%s marked |cff%02x%02x%02x%s|r."):format(link, m.r * 255, m.g * 255, m.b * 255, m.name))
+        local note = makePermanent and " (permanent)" or (wasPermanent and " (no longer permanent)" or "")
+        Print(("%s marked %s%s."):format(link, ColorName(nextMark), note))
     else
-        Print(link .. " unmarked.")
+        Print(link .. " unmarked." .. ((makePermanent or wasPermanent) and " Its permanent mark was removed." or ""))
     end
     Repaint()
+    RefreshList()
 end
 
 -- Drop the marks of items that have left the bags. Only items seen in the bags this
@@ -211,7 +232,7 @@ end
 -- Returns true when the widget is shown.
 local function Paint(w, button, id)
     w.button = button
-    local mark = id and marks[id]
+    local mark = MarkOf(id)
     w.mark = mark
     if not mark then
         w.pulse:Stop()
@@ -233,12 +254,12 @@ local function Paint(w, button, id)
 end
 
 local function OnClick(button, mouse)
-    if mouse ~= "LeftButton" or not IsAltKeyDown() or IsShiftKeyDown() or IsControlKeyDown() then return end
+    if mouse ~= "LeftButton" or not IsAltKeyDown() or IsControlKeyDown() then return end
     if GetCursorInfo() then return end
     local bag, slot = bagOf[button], slotOf[button]
     if not InBagRange(bag) then return end
     local id = GetContainerItemID(bag, slot)
-    if id then Cycle(id, bag, slot) end
+    if id then Cycle(id, bag, slot, IsShiftKeyDown()) end
 end
 
 local function HookClick(button, handler)
@@ -252,7 +273,7 @@ local function Slot(button, parent, bag, slot, id)
     HookClick(button, OnClick)
     local w = widgets[button]
     if not w then
-        if not (id and marks[id]) then return end
+        if not MarkOf(id) then return end
         w = NewWidget(parent, button)
         widgets[button] = w
     end
@@ -455,7 +476,7 @@ local function MarkedItems(mark, keep)
     local list, byID = {}, {}
     ForEachBagSlot(function(bag, slot)
         local info = GetContainerItemInfo(bag, slot)
-        if info and marks[info.itemID] == mark and (not keep or keep(info)) then
+        if info and MarkOf(info.itemID) == mark and (not keep or keep(info)) then
             local item = byID[info.itemID]
             if not item then
                 item = { id = info.itemID, link = info.hyperlink, icon = info.iconFileID, count = 0, stacks = 0 }
@@ -548,7 +569,7 @@ local function SellStep()
     local used = 0
     ForEachBagSlot(function(bag, slot)
         local info = GetContainerItemInfo(bag, slot)
-        if info and marks[info.itemID] == VENDOR and not info.isLocked and Sellable(info) then
+        if info and MarkOf(info.itemID) == VENDOR and not info.isLocked and Sellable(info) then
             UseContainerItem(bag, slot)
             used, sold = used + 1, sold + 1
             earned = earned + (SellPrice(info.itemID) or 0) * (info.stackCount or 1)
@@ -602,7 +623,7 @@ local function CountBankMarked()
     local count = 0
     ForEachBagSlot(function(bag, slot)
         local id = GetContainerItemID(bag, slot)
-        if id and marks[id] == BANK then count = count + 1 end
+        if id and MarkOf(id) == BANK then count = count + 1 end
     end)
     return count
 end
@@ -637,7 +658,7 @@ local function DepositStep()
     local used = 0
     ForEachBagSlot(function(bag, slot)
         local info = GetContainerItemInfo(bag, slot)
-        if info and marks[info.itemID] == BANK and not info.isLocked then
+        if info and MarkOf(info.itemID) == BANK and not info.isLocked then
             UseContainerItem(bag, slot, nil, BANK_TYPE)
             used = used + 1
             return used >= BATCH
@@ -692,10 +713,11 @@ end
 local function OnTooltip(tooltip, data)
     local id = data and data.id
     if not id or (issecretvalue and issecretvalue(id)) then return end
-    local mark = marks and marks[id]
+    local mark = MarkOf(id)
     if not mark then return end
     local m = MARKS[mark]
-    tooltip:AddLine("Bagmark: " .. m.name, m.r, m.g, m.b)
+    local perm = permanent and permanent[id] and " (permanent)" or ""
+    tooltip:AddLine("Bagmark: " .. m.name .. perm, m.r, m.g, m.b)
 end
 
 -------------------------------------------------------------------------------
@@ -723,7 +745,8 @@ end
 local function Init()
     BagmarkDB = BagmarkDB or {}
     BagmarkDB.marks = BagmarkDB.marks or {}
-    marks = BagmarkDB.marks
+    BagmarkDB.permanent = BagmarkDB.permanent or {}
+    marks, permanent = BagmarkDB.marks, BagmarkDB.permanent
 
     -- Core events first, so the vendor/bank/mail/AH features work whatever happens below.
     for _, event in ipairs({
@@ -837,23 +860,174 @@ events:RegisterEvent("ADDON_LOADED")
 -- Slash command
 -------------------------------------------------------------------------------
 
+-------------------------------------------------------------------------------
+-- Permanent marks window (/bagmark list)
+-------------------------------------------------------------------------------
+
+local LIST_W, LIST_H, LIST_ROW_H, LIST_PAD = 320, 360, 22, 10
+local listFrame
+
+local function BuildList()
+    local f = CreateFrame("Frame", "BagmarkListFrame", UIParent, "BackdropTemplate")
+    f:SetSize(LIST_W, LIST_H)
+    f:SetPoint("CENTER")
+    f:SetFrameStrata("DIALOG")
+    f:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
+    f:SetBackdropColor(0, 0, 0, 0.85)
+    f:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
+    f:EnableMouse(true)
+    f:SetMovable(true)
+    f:RegisterForDrag("LeftButton")
+    f:SetScript("OnDragStart", f.StartMoving)
+    f:SetScript("OnDragStop", f.StopMovingOrSizing)
+    f:SetClampedToScreen(true)
+    f:Hide()
+    table.insert(UISpecialFrames, "BagmarkListFrame") -- Escape closes it
+
+    local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("TOPLEFT", LIST_PAD, -LIST_PAD)
+    title:SetText("Bagmark: Permanent Marks")
+
+    local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+    close:SetPoint("TOPRIGHT", 2, 2)
+
+    local scroll = CreateFrame("ScrollFrame", nil, f, "UIPanelScrollFrameTemplate")
+    scroll:SetPoint("TOPLEFT", LIST_PAD, -34)
+    scroll:SetPoint("BOTTOMRIGHT", -30, LIST_PAD)
+    local content = CreateFrame("Frame", nil, scroll)
+    content:SetSize(LIST_W - LIST_PAD - 30, 1)
+    scroll:SetScrollChild(content)
+    f.content = content
+
+    local empty = content:CreateFontString(nil, "OVERLAY", "GameFontDisable")
+    empty:SetPoint("TOPLEFT", 0, -4)
+    empty:SetWidth(content:GetWidth())
+    empty:SetJustifyH("LEFT")
+    empty:SetText("No permanent marks. Alt+Shift-click a bag item to give it one.")
+    f.empty = empty
+
+    f.rows = {}
+    -- Item names arrive from the server a moment later when they aren't cached.
+    f:SetScript("OnEvent", function() RefreshList() end)
+    f:SetScript("OnShow", function(self) self:RegisterEvent("GET_ITEM_INFO_RECEIVED") end)
+    f:SetScript("OnHide", function(self) self:UnregisterEvent("GET_ITEM_INFO_RECEIVED") end)
+    return f
+end
+
+local function ListRow(i)
+    local row = listFrame.rows[i]
+    if row then return row end
+    local content = listFrame.content
+    row = CreateFrame("Frame", nil, content)
+    row:SetSize(content:GetWidth(), LIST_ROW_H)
+    row:SetPoint("TOPLEFT", 0, -(i - 1) * LIST_ROW_H)
+    row:EnableMouse(true)
+
+    local remove = CreateFrame("Button", nil, row, "UIPanelCloseButton")
+    remove:SetSize(LIST_ROW_H, LIST_ROW_H)
+    remove:SetPoint("RIGHT")
+    remove:SetScript("OnClick", function()
+        if row.id and permanent[row.id] then
+            local _, link = GetItemInfo(row.id)
+            permanent[row.id] = nil
+            Print((link or ("item " .. row.id)) .. "'s permanent mark was removed.")
+            Repaint()
+            RefreshList()
+        end
+    end)
+    remove:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Remove permanent mark")
+        GameTooltip:Show()
+    end)
+    remove:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    local icon = row:CreateTexture(nil, "ARTWORK")
+    icon:SetSize(LIST_ROW_H - 4, LIST_ROW_H - 4)
+    icon:SetPoint("LEFT")
+    icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    row.icon = icon
+
+    local mark = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    mark:SetPoint("RIGHT", remove, "LEFT", -4, 0)
+    row.mark = mark
+
+    local name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    name:SetPoint("LEFT", icon, "RIGHT", 5, 0)
+    name:SetPoint("RIGHT", mark, "LEFT", -6, 0)
+    name:SetJustifyH("LEFT")
+    name:SetWordWrap(false)
+    row.name = name
+
+    row:SetScript("OnEnter", function(self)
+        if not self.id then return end
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetItemByID(self.id)
+        GameTooltip:Show()
+    end)
+    row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    listFrame.rows[i] = row
+    return row
+end
+
+function RefreshList()
+    if not (listFrame and listFrame:IsShown()) then return end
+    local entries = {}
+    for id, mark in pairs(permanent) do
+        local name, link = GetItemInfo(id)
+        if not name then C_Item.RequestLoadItemDataByID(id) end
+        entries[#entries + 1] = { id = id, mark = mark, name = name or ("item " .. id), link = link }
+    end
+    table.sort(entries, function(a, b)
+        if a.mark ~= b.mark then return a.mark < b.mark end
+        return a.name < b.name
+    end)
+    for i, e in ipairs(entries) do
+        local row = ListRow(i)
+        row.id = e.id
+        row.icon:SetTexture(C_Item.GetItemIconByID(e.id))
+        row.name:SetText(e.link and e.link:gsub("[%[%]]", "") or e.name)
+        row.mark:SetText(ColorName(e.mark))
+        row:Show()
+    end
+    for i = #entries + 1, #listFrame.rows do listFrame.rows[i]:Hide() end
+    listFrame.empty:SetShown(#entries == 0)
+    listFrame.content:SetHeight(math.max(1, #entries * LIST_ROW_H))
+end
+
+local function ToggleList()
+    listFrame = listFrame or BuildList()
+    if listFrame:IsShown() then
+        listFrame:Hide()
+    else
+        listFrame:Show()
+        RefreshList()
+    end
+end
+
+-------------------------------------------------------------------------------
+-- Slash command
+-------------------------------------------------------------------------------
+
 SLASH_BAGMARK1 = "/bagmark"
 SlashCmdList.BAGMARK = function(msg)
     msg = (msg or ""):lower():match("^%s*(.-)%s*$")
-    if msg == "clear" then
+    if msg == "list" then
+        ToggleList()
+    elseif msg == "clear" then
         wipe(marks)
         Repaint()
-        Print("All marks cleared.")
-    elseif msg == "list" then
-        local any = false
-        for id, mark in pairs(marks) do
-            any = true
-            local _, link = GetItemInfo(id)
-            Print(("%s: %s"):format(link or ("item " .. id), MARKS[mark].name))
-        end
-        if not any then Print("Nothing is marked.") end
+        Print("Normal marks cleared. Permanent marks were kept (/bagmark clear all removes those too).")
+    elseif msg == "clear all" then
+        wipe(marks)
+        wipe(permanent)
+        Repaint()
+        RefreshList()
+        Print("All marks cleared, including permanent ones.")
     else
         Print("Alt-click a bag item to cycle Vendor > Auction > Mail > Bank > none.")
-        Print("/bagmark list - show marked items;  /bagmark clear - clear every mark.")
+        Print("Alt+Shift-click does the same but makes the mark permanent.")
+        Print("/bagmark list - permanent marks;  /bagmark clear - normal marks;  /bagmark clear all - every mark.")
     end
 end
